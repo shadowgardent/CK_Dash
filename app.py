@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,19 +14,22 @@ st.title('📊 QC Analysis Dashboard')
 st.markdown("Upload your Excel file to analyze Quality Control data and trends.")
 
 # --- Thai Font Setup for Matplotlib ---
-# Configure Thai font based on OS
+# Configure Thai font based on OS and local font files
 try:
-    if sys.platform == 'win32':
+    local_font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'Sarabun-Regular.ttf')
+    if os.path.exists(local_font_path):
+        fm.fontManager.addfont(local_font_path)
+        plt.rcParams['font.family'] = 'Sarabun'
+    elif sys.platform == 'win32':
         # Windows: Use Tahoma which supports Thai and comes with Windows
         plt.rcParams['font.family'] = 'Tahoma'
     else:
-        # Linux/Mac: Try to find Thai font
+        # Linux/Mac: Try to find Thai font on system
         font_path = '/usr/share/fonts/truetype/tlwg/Loma.ttf'
         fm.fontManager.addfont(font_path)
         plt.rcParams['font.family'] = 'Loma'
     plt.rcParams['axes.unicode_minus'] = False  # This prevents minus signs from being squares
 except FileNotFoundError:
-    # Fallback: Use DejaVu Sans which has reasonable Thai support
     plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['axes.unicode_minus'] = False
     st.warning("Using fallback font. Thai characters may not display perfectly.")
