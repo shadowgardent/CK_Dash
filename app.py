@@ -102,36 +102,114 @@ if uploaded_file is not None:
             st.warning("Please select at least one site for analysis.")
             st.stop()
 
+        # --- Chart Selection Menu ---
+        st.sidebar.markdown("### 📊 เลือกกราฟที่ต้องการแสดง")
+        chart_options = {
+            '📈 Production Line Performance': 'production_line',
+            '📊 Pareto Chart (Top Defects)': 'pareto',
+            '📋 Summary Table': 'summary',
+            '📌 Line Performance Table': 'line_perf',
+            '⏰ Hourly Trend': 'hourly_trend',
+            '🔍 Line & QC Analysis': 'line_qc',
+            '🔥 Heatmap & Top Defects': 'heatmap'
+        }
+        selected_charts = st.sidebar.multiselect(
+            'Charts to Display',
+            options=list(chart_options.keys()),
+            default=list(chart_options.keys())
+        )
+        selected_chart_keys = [chart_options[chart] for chart in selected_charts]
+
         st.markdown(f"### Analyzing data from **{start_date}** to **{end_date}** for Site(s): **{', '.join(selected_sites)}**")
 
         # --- Analysis and Plotting Functions (Adapted for Streamlit) ---
 
         def plot_bar_summary_st(df, start_d, end_d, site_name=None):
-            st.subheader(f'Summary of Inspection Results: {site_name if site_name else "All Sites"}')
+            st.subheader(f'Production Line Performance: {site_name if site_name else "All Sites"}')
             df_plot = df.copy()
             if site_name: # Filter by site if provided
                 df_plot = df_plot[df_plot['site'] == site_name]
 
             if df_plot.empty:
-                st.info(f"No data for summary bar chart in the selected range for {site_name if site_name else 'All Sites'}.")
+                st.info(f"No data for line performance in the selected range for {site_name if site_name else 'All Sites'}.")
                 return
 
-            status_col = 'severity_desc' if 'severity_desc' in df_plot.columns else 'severity'
-            summary = df_plot[status_col].value_counts().reset_index()
-            summary.columns = ['Status', 'Count']
+            # Calculate line performance for total units and pass rate
+            line_perf = df_plot.groupby(['line', df_plot['severity_desc'].apply(lambda x: 'Pass' if x=='ผ่าน' else 'Defect')]).size().unstack(fill_value=0)
+            if 'Pass' not in line_perf.columns: line_perf['Pass'] = 0
+            if 'Defect' not in line_perf.columns: line_perf['Defect'] = 0
 
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.barplot(data=summary, x='Status', y='Count', palette='viridis', ax=ax, hue='Status', legend=False)
-            for p in ax.patches:
-                ax.annotate(f'{int(p.get_height())}', (p.get_x() + p.get_width() / 2., p.get_height()),
+            total_checks_per_line = line_perf['Pass'] + line_perf['Defect']
+            line_perf['Pass Rate (%)'] = (line_perf['Pass'] / total_checks_per_line) * 100
+            line_perf['Pass Rate (%)'] = line_perf['Pass Rate (%)'].fillna(0)
+            line_perf['Total_Units'] = line_perf['Pass'] + line_perf['Defect']
+            line_perf_sorted = line_perf.sort_values('Total_Units', ascending=False) # Sort by Total_Units for the first plot
+
+            # Prepare data for defect breakdown chart
+            df_defects_only = df_plot[df_plot['severity_desc'] != 'ผ่าน'].copy()
+            if not df_defects_only.empty:
+                # Group by line and original severity_desc (defect types)
+                defect_breakdown = df_defects_only.groupby(['line', 'severity_desc']).size().unstack(fill_value=0)
+                # Ensure all known defect types are present as columns, fill with 0 if not
+                all_defect_types = [s for s in df['severity_desc'].dropna().unique() if s != 'ผ่าน']
+                for col in all_defect_types:
+                    if col not in defect_breakdown.columns:
+                        defect_breakdown[col] = 0
+                defect_breakdown = defect_breakdown[all_defect_types] # Reorder columns if needed
+
+                # Align indices for plotting
+                defect_breakdown = defect_breakdown.reindex(line_perf_sorted.index, fill_value=0)
+            else:
+                defect_breakdown = pd.DataFrame(index=line_perf_sorted.index)
+
+            # Create two subplots
+            fig, axes = plt.subplots(1, 2, figsize=(24, 7)) # Adjust figsize as needed
+
+            # Plot 1: Total Units by Line (existing chart)
+            sns.barplot(x=line_perf_sorted.index, y='Total_Units', data=line_perf_sorted, palette='deep', ax=axes[0], hue=line_perf_sorted.index, legend=False)
+            for p in axes[0].patches:
+                axes[0].annotate(f'{int(p.get_height())}', (p.get_x() + p.get_width() / 2., p.get_height()),
                             ha='center', va='center', xytext=(0, 9), textcoords='offset points')
+            axes[0].set_title(f'จำนวนเครื่องที่ผลิตได้ตามสายการผลิต - Site {site_name}', fontsize=16)
+            axes[0].set_xlabel('สายการผลิต (Line)', fontsize=12)
+            axes[0].set_ylabel('จำนวนเครื่องที่ผลิตได้ (หน่วย)', fontsize=12)
+            axes[0].tick_params(axis='x', rotation=45)
+            axes[0].grid(axis='y', linestyle='--', alpha=0.6)
 
-            ax.set_title(f'Summary of Inspection Results: {start_d} to {end_d}', fontsize=16)
-            ax.set_xlabel('Status', fontsize=12)
-            ax.set_ylabel('Count', fontsize=12)
-            ax.grid(axis='y', linestyle='--', alpha=0.6)
+            # Plot 2: Defect Breakdown by Line
+            if not defect_breakdown.empty and not defect_breakdown.columns.empty:
+                defect_breakdown.plot(kind='bar', stacked=True, ax=axes[1], cmap='Paired')
+                axes[1].set_title(f'ประเภทปัญหาที่พบแยกตามสายการผลิต - Site {site_name}', fontsize=16)
+                axes[1].set_xlabel('สายการผลิต (Line)', fontsize=12)
+                axes[1].set_ylabel('จำนวนปัญหา (ครั้ง)', fontsize=12)
+                axes[1].tick_params(axis='x', rotation=45)
+                axes[1].grid(axis='y', linestyle='--', alpha=0.6)
+                axes[1].legend(title='ประเภทปัญหา', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+                # Add annotations for stacked bars
+                for container in axes[1].containers:
+                    for i, p in enumerate(container.patches):
+                        height = p.get_height()
+                        if height > 0: # Only annotate segments with actual values
+                            axes[1].annotate(f'{int(height)}',
+                                             (p.get_x() + p.get_width() / 2., p.get_y() + p.get_height() / 2.),
+                                             ha='center', va='center',
+                                             xytext=(0, 0), textcoords='offset points',
+                                             color='black', fontsize=9, fontweight='bold')
+
+            else:
+                axes[1].set_title(f'ไม่พบข้อมูลปัญหาสำหรับ Site {site_name}', fontsize=16)
+                axes[1].set_xlabel('สายการผลิต (Line)', fontsize=12)
+                axes[1].set_ylabel('จำนวนปัญหา (ครั้ง)', fontsize=12)
+                axes[1].text(0.5, 0.5, 'ไม่พบข้อมูลปัญหา', horizontalalignment='center', verticalalignment='center', transform=axes[1].transAxes, fontsize=14, color='gray')
+
+            plt.tight_layout()
             st.pyplot(fig)
             plt.close(fig)
+
+            # Display the performance table
+            st.markdown(f"#### ตารางประสิทธิภาพรายสายการผลิตสำหรับ Site {site_name}")
+            st.dataframe(line_perf.sort_values('Pass Rate (%)', ascending=False).style.set_table_styles([{'selector': 'td', 'props': 'text-align: center;'}, {'selector': 'th', 'props': 'text-align: center;'}]), use_container_width=True)
 
         def plot_pareto_chart_by_site_st(df_data, start_d, end_d, site_name):
             st.subheader(f'Pareto Chart: Top Defects for Site {site_name}')
@@ -260,8 +338,8 @@ if uploaded_file is not None:
 
             df_perf_site['Result'] = df_perf_site['severity_desc'].apply(lambda x: 'Pass' if x == 'ผ่าน' else 'Defect')
 
-            # --- Plot 1: Defects by Production Line ---
-            st.markdown("#### Defects by Production Line")
+            # --- Plot 1: Defects by Production Line with Machine and Location Breakdown ---
+            st.markdown("#### จำนวนปัญหาที่พบแยกตามสายการผลิต (Defects by Production Line)")
             line_summary = df_perf_site.groupby(['line', 'Result']).size().unstack(fill_value=0)
             if 'Pass' not in line_summary.columns: line_summary['Pass'] = 0
             if 'Defect' not in line_summary.columns: line_summary['Defect'] = 0
@@ -276,9 +354,9 @@ if uploaded_file is not None:
             else:
                 fig1, ax1 = plt.subplots(figsize=(15, 6))
                 sns.barplot(x=line_summary.index, y=line_summary['Defect'], palette='Reds_r', ax=ax1, hue=line_summary.index, legend=False)
-                ax1.set_title(f'Number of Defects by Production Line - Site {site_name}', fontsize=16)
-                ax1.set_xlabel('Production Line')
-                ax1.set_ylabel('Number of Defects')
+                ax1.set_title(f'จำนวนปัญหาที่พบแยกตามสายการผลิต - Site {site_name}', fontsize=16)
+                ax1.set_xlabel('สายการผลิต (Line)')
+                ax1.set_ylabel('จำนวนปัญหาที่พบ (ครั้ง)')
                 ax1.tick_params(axis='x', rotation=45)
 
                 for p in ax1.patches:
@@ -288,6 +366,80 @@ if uploaded_file is not None:
                 plt.tight_layout()
                 st.pyplot(fig1)
                 plt.close(fig1)
+            
+            # --- Plot 1b: Detailed Defect Breakdown by Line, Location, and Machine ---
+            st.markdown("#### การแจกแจงปัญหาโดยละเอียด (Location Description และ Machine)")
+            df_defects_detailed = df_perf_site[df_perf_site['Result'] == 'Defect'].copy()
+            
+            # Check for the correct column name for location (try both possibilities)
+            location_col = None
+            if 'location_description' in df_defects_detailed.columns:
+                location_col = 'location_description'
+            elif 'location_desc๐ription' in df_defects_detailed.columns:
+                location_col = 'location_desc๐ription'
+            else:
+                # Check what columns contain 'location' (case-insensitive)
+                location_cols = [col for col in df_defects_detailed.columns if 'location' in col.lower()]
+                location_col = location_cols[0] if location_cols else None
+            
+            if location_col and 'machine' in df_defects_detailed.columns:
+                df_defects_detailed = df_defects_detailed.dropna(subset=['line', location_col, 'machine'])
+                
+                if not df_defects_detailed.empty:
+                    # Group by line, location, and machine to count defects
+                    detailed_defects_summary = df_defects_detailed.groupby(['line', location_col, 'machine']).size().reset_index(name='defect_count')
+
+                    # Get unique lines for faceting
+                    unique_lines = sorted(detailed_defects_summary['line'].unique())
+                    n_facets = len(unique_lines)
+                    
+                    if n_facets > 0:
+                        # Create faceted plots
+                        n_cols = 2
+                        n_rows = (n_facets + n_cols - 1) // n_cols
+                        
+                        fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 5 * n_rows))
+                        if n_facets == 1:
+                            axes = [axes]
+                        else:
+                            axes = axes.flatten()
+                        
+                        for idx, line in enumerate(unique_lines):
+                            line_data = detailed_defects_summary[detailed_defects_summary['line'] == line]
+                            
+                            if not line_data.empty:
+                                sns.barplot(data=line_data, x=location_col, y='defect_count', hue='machine', 
+                                           ax=axes[idx], palette='Paired')
+                                axes[idx].set_title(f'สายการผลิต: {line}', fontsize=12)
+                                axes[idx].set_xlabel('กระบวนการ (Location Description)', fontsize=10)
+                                axes[idx].set_ylabel('จำนวนปัญหา (ครั้ง)', fontsize=10)
+                                axes[idx].tick_params(axis='x', rotation=45)
+                                axes[idx].grid(axis='y', linestyle='--', alpha=0.6)
+                                axes[idx].legend(title='เครื่องจักร (Machine)', fontsize=8)
+                                
+                                # Add annotations
+                                for p in axes[idx].patches:
+                                    height = p.get_height()
+                                    if height > 0:
+                                        axes[idx].annotate(f'{int(height)}',
+                                                        (p.get_x() + p.get_width() / 2., height),
+                                                        ha='center', va='center', xytext=(0, 5),
+                                                        textcoords='offset points', fontsize=8, fontweight='bold')
+                        
+                        # Hide unused subplots
+                        for idx in range(n_facets, len(axes)):
+                            axes[idx].set_visible(False)
+                        
+                        fig.suptitle(f'การแจกแจงปัญหาโดยละเอียด - Site {site_name}', fontsize=14, y=1.00)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.info(f"ไม่พบข้อมูลปัญหาโดยละเอียดสำหรับ Site {site_name}")
+                else:
+                    st.info(f"ไม่พบข้อมูลปัญหาโดยละเอียดสำหรับ Site {site_name}")
+            else:
+                st.info(f"ไม่มีคอลัมน์ location_description หรือ machine ในข้อมูล ข้ามการแสดงกราฟนี้")
 
             # --- Plot 2: Top 15 QC Inspectors by Defect Count ---
             st.markdown("#### Top 15 QC Inspectors by Defect Count")
@@ -369,25 +521,32 @@ if uploaded_file is not None:
             st.header(f'Analysis for Site: {site}')
 
             # Summary Bar Chart for current site (or overall if only one site selected)
-            plot_bar_summary_st(df_filtered_date, start_date, end_date, site)
+            if 'production_line' in selected_chart_keys:
+                plot_bar_summary_st(df_filtered_date, start_date, end_date, site)
 
             # Pareto Chart
-            plot_pareto_chart_by_site_st(df_filtered_date, start_date, end_date, site)
+            if 'pareto' in selected_chart_keys:
+                plot_pareto_chart_by_site_st(df_filtered_date, start_date, end_date, site)
 
             # Site Summary (table)
-            display_summary_by_site_st(df_filtered_date, start_date, end_date, site)
+            if 'summary' in selected_chart_keys:
+                display_summary_by_site_st(df_filtered_date, start_date, end_date, site)
 
             # Line Performance
-            display_line_performance_st(df_filtered_date, start_date, end_date, site)
+            if 'line_perf' in selected_chart_keys:
+                display_line_performance_st(df_filtered_date, start_date, end_date, site)
 
             # Hourly Trend
-            plot_hourly_trend_st(df_filtered_date, start_date, end_date, site)
+            if 'hourly_trend' in selected_chart_keys:
+                plot_hourly_trend_st(df_filtered_date, start_date, end_date, site)
 
             # Line and QC Analysis
-            plot_line_qc_analysis_st(df_filtered_date, start_date, end_date, site)
+            if 'line_qc' in selected_chart_keys:
+                plot_line_qc_analysis_st(df_filtered_date, start_date, end_date, site)
 
             # Heatmap and Top Defects
-            plot_heatmap_and_top_defects_st(df_filtered_date, start_date, end_date, site)
+            if 'heatmap' in selected_chart_keys:
+                plot_heatmap_and_top_defects_st(df_filtered_date, start_date, end_date, site)
 
 elif uploaded_file is None:
     st.info("Please upload an Excel file to start the analysis.")
